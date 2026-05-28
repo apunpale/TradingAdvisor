@@ -23,24 +23,39 @@ def backfill_ticker(
     end: Optional[str] = None
 ) -> Optional[pd.DataFrame]:
     """
-    Download historical data for a ticker and save it as CSV.
-    Compatible with Python 3.9.
+    Download historical data for a ticker and save it as CSV
+    with only: Date, Close, High, Low, Open, Volume.
     """
-    ensure_ticker_folder()
+
+    os.makedirs(TICKER_FOLDER, exist_ok=True)
+
+    ticker = ticker.strip().upper()
 
     if end is None:
         end = datetime.today().strftime("%Y-%m-%d")
 
-    ticker = ticker.strip().upper()
+    df = yf.download(ticker, start=start, end=end, progress=False)
 
-    df = yf.download(ticker, start=start, end=end)
     if df.empty:
+        print(f"No data returned for {ticker}")
         return None
 
+# Fix multi-index columns created by yfinance
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+
+    # Reset index so Date becomes a column
+    df = df.reset_index()
+
+    # Select only the required columns
+    keep_cols = ["Date", "Close", "High", "Low", "Open", "Volume"]
+    df = df[keep_cols]
+
     path = os.path.join(TICKER_FOLDER, f"{ticker}.csv")
-    df.to_csv(path)
+    df.to_csv(path, index=False)
 
     return df
+
 
 
 def refresh_all_tickers(

@@ -24,7 +24,8 @@ def add_ticker(ticker: str, path: str = TICKERS_FILE) -> None:
     tickers = set(load_tickers(path))
     if ticker not in tickers:
         with open(path, "a") as f:
-            f.write(ticker + "\n")
+            f.write("\n" + ticker + "\n")
+
 
 
 def load_restricted_list(path: str = RESTRICTED_FILE) -> set[str]:

@@ -55,7 +55,7 @@ def main():
         st.error("No data available. Add and backfill tickers first.")
         return
 
-    available_tickers = sorted({col[1] for col in panel.columns if col[0] == "Close"})
+    available_tickers = load_tickers()
 
     # --- Backtest configuration ---
     st.header("Backtest configuration")
