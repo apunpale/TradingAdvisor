@@ -7,6 +7,7 @@ import yfinance as yf
 
 from Src.config import DATA_PATH, load_tickers
 
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # Folder where individual ticker CSVs are stored
 TICKER_FOLDER = os.path.join(DATA_PATH, "Tickers")
@@ -20,41 +21,54 @@ def ensure_ticker_folder():
 def backfill_ticker(
     ticker: str,
     start: str = "2018-01-01",
-    end: Optional[str] = None
+    end: Optional[str] = None,
+    folder_override: Optional[str] = None,
 ) -> Optional[pd.DataFrame]:
     """
-    Download historical data for a ticker and save it as CSV
-    with only: Date, Close, High, Low, Open, Volume.
+    Download historical data for a ticker and save it as CSV.
+    Supports overriding the output folder (used for benchmarks).
     """
 
-    os.makedirs(TICKER_FOLDER, exist_ok=True)
+    # Decide where to save
+    if folder_override:
+        save_folder = folder_override
+    else:
+        save_folder = TICKER_FOLDER
 
-    ticker = ticker.strip().upper()
+    os.makedirs(save_folder, exist_ok=True)
 
     if end is None:
         end = datetime.today().strftime("%Y-%m-%d")
 
-    df = yf.download(ticker, start=start, end=end, progress=False)
+    ticker = ticker.strip().upper()
 
+    df = yf.download(ticker, start=start, end=end, progress=False)
     if df.empty:
-        print(f"No data returned for {ticker}")
         return None
 
-# Fix multi-index columns created by yfinance
+    # Fix multi-index columns (MU,MU,MU issue)
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
 
-    # Reset index so Date becomes a column
     df = df.reset_index()
 
-    # Select only the required columns
     keep_cols = ["Date", "Close", "High", "Low", "Open", "Volume"]
+    missing = [c for c in keep_cols if c not in df.columns]
+    if missing:
+        print(f"Missing columns for {ticker}: {missing}")
+        return None
+
     df = df[keep_cols]
 
-    path = os.path.join(TICKER_FOLDER, f"{ticker}.csv")
+    numeric_cols = ["Close", "High", "Low", "Open", "Volume"]
+    df[numeric_cols] = df[numeric_cols].apply(pd.to_numeric, errors="coerce")
+    df = df.dropna()
+
+    path = os.path.join(save_folder, f"{ticker}.csv")
     df.to_csv(path, index=False)
 
     return df
+
 
 
 
@@ -88,20 +102,35 @@ def load_ticker_timeseries(ticker: str) -> Optional[pd.DataFrame]:
 
 def load_panel_from_tickers(tickers: list) -> Optional[pd.DataFrame]:
     """
-    Load all tickers into a single multi-index DataFrame.
+    Load all tickers (trading + benchmarks) into a single multi-index DataFrame.
     Structure:
         Close | AAPL
         Close | AMZN
+        Close | ^GSPC
         ...
     """
+
     ensure_ticker_folder()
 
     series = []
 
     for t in tickers:
-        df = load_ticker_timeseries(t)
+        # Decide folder based on whether ticker is a benchmark
+        if t.startswith("^"):
+            folder = os.path.join(ROOT, "Data", "Benchmarks")
+        else:
+            folder = TICKER_FOLDER
+
+        path = os.path.join(folder, f"{t}.csv")
+        if not os.path.exists(path):
+            print(f"Missing CSV for {t}: {path}")
+            continue
+
+        df = pd.read_csv(path, parse_dates=["Date"])
         if df is None or df.empty:
             continue
+
+        df = df.set_index("Date")
 
         # Keep only OHLCV
         df = df[["Open", "High", "Low", "Close", "Volume"]]
@@ -116,3 +145,4 @@ def load_panel_from_tickers(tickers: list) -> Optional[pd.DataFrame]:
 
     panel = pd.concat(series, axis=1).sort_index()
     return panel
+

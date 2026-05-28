@@ -9,6 +9,28 @@ from Src.config import load_restricted_list
 from Src.portfolio import Portfolio
 from Src.signals import compute_ma20_signals_for_day
 
+def benchmark_return(panel, start_date, end_date, ticker):
+    """
+    Compute benchmark return using the Close price series.
+    """
+    try:
+        series = panel["Close"][ticker]
+    except KeyError:
+        return None
+
+    # Restrict to date range
+    series = series.loc[(series.index >= start_date) & (series.index <= end_date)]
+
+    if series.empty:
+        return None
+
+    start_price = series.iloc[0]
+    end_price = series.iloc[-1]
+
+    return (end_price - start_price) / start_price
+
+
+
 
 def run_backtest(
     panel: pd.DataFrame,
@@ -83,6 +105,63 @@ def run_backtest(
 
     return portfolio
 
+def run_backtest_with_benchmark(
+    panel,
+    tickers,
+    initial_cash,
+    start_date,
+    end_date,
+    max_capital=5_000.0,
+    min_holding_days=30,
+):
+    portfolio = run_backtest(
+        panel,
+        tickers,
+        initial_cash,
+        start_date,
+        end_date,
+        max_capital,
+        min_holding_days,
+    )
+
+    # Strategy return
+    strategy_return = (portfolio.final_value - initial_cash) / initial_cash
+
+    # Benchmark return
+    benchmark_return = compute_benchmark_return(panel, start_date, end_date)
+
+    beat_benchmark = (
+        benchmark_return is not None
+        and strategy_return > benchmark_return
+    )
+
+    return {
+        "portfolio": portfolio,
+        "strategy_return": strategy_return,
+        "benchmark_return": benchmark_return,
+        "beat_benchmark": beat_benchmark,
+    }
+
+def compute_benchmark_return(panel: pd.DataFrame, start_date, end_date) -> float | None:
+    """
+    Computes S&P 500 (^GSPC) return over the backtest window.
+    Returns decimal return (e.g., 0.12 for +12%).
+    """
+    if "^GSPC" not in panel.columns.get_level_values(0):
+        return None  # benchmark not available
+
+    spx = panel["^GSPC"].reset_index()
+
+    mask = (spx["Date"] >= start_date) & (spx["Date"] <= end_date)
+    spx_period = spx.loc[mask]
+
+    if spx_period.empty:
+        return None
+
+    start_price = spx_period.iloc[0]["Close"]
+    end_price = spx_period.iloc[-1]["Close"]
+
+    return (end_price - start_price) / start_price
 
 def equity_curve(portfolio: Portfolio) -> pd.Series:
     dates = [h.date for h in portfolio.history]
