@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Dict, List
+from typing import Any, Dict, List, Tuple
 
 
 @dataclass
@@ -27,7 +27,7 @@ class PortfolioSnapshot:
     cash: float
     holdings: Dict[str, float]
     portfolio_value: float
-    signals: Dict[str, float]
+    signals: Dict[str, Any]
 
 
 @dataclass
@@ -37,6 +37,7 @@ class Portfolio:
     holdings: Dict[str, Position] = field(default_factory=dict)
     trades: List[Trade] = field(default_factory=list)
     history: List[PortfolioSnapshot] = field(default_factory=list)
+    contributions: List[Tuple[datetime, float]] = field(default_factory=list)
 
     def __post_init__(self):
         self.cash = self.initial_cash
@@ -109,12 +110,19 @@ class Portfolio:
             )
         )
 
-    def log_day(self, date: datetime, prices: Dict[str, float], signals: Dict[str, float]) -> None:
+    def log_day(self, date: datetime, prices: Dict[str, float], signals: Dict[str, Any]) -> None:
         snapshot = PortfolioSnapshot(
             date=date,
             cash=self.cash,
             holdings={t: p.shares for t, p in self.holdings.items()},
             portfolio_value=self.value(prices),
-            signals=signals.copy(),
+            signals={t: v.copy() if isinstance(v, dict) else v for t, v in signals.items()},
         )
         self.history.append(snapshot)
+
+    def contribute(self, amount: float, date: datetime) -> None:
+        """Add external contribution to the portfolio cash and record it."""
+        if amount is None or amount <= 0:
+            return
+        self.cash += amount
+        self.contributions.append((date, amount))

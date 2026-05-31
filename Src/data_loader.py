@@ -6,6 +6,7 @@ import pandas as pd
 import yfinance as yf
 
 from Src.config import DATA_PATH, load_tickers
+from Src.config import TICKERS
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -145,4 +146,57 @@ def load_panel_from_tickers(tickers: list) -> Optional[pd.DataFrame]:
 
     panel = pd.concat(series, axis=1).sort_index()
     return panel
+
+
+# --- Compatibility wrappers expected by older tests/scripts ---
+def download_prices() -> pd.DataFrame:
+    """Compatibility: return a panel DataFrame for available tickers.
+    If no tickers are configured, returns an empty DataFrame.
+    """
+    tickers = load_tickers() if TICKERS == [] else TICKERS
+    if not tickers:
+        return pd.DataFrame()
+    panel = load_panel_from_tickers(tickers)
+    return panel if panel is not None else pd.DataFrame()
+
+
+def save_to_csv(df: pd.DataFrame, path: Optional[str] = None) -> None:
+    if path is None:
+        path = os.path.join(DATA_PATH, "prices.csv")
+    # If given a panel (multi-index), write as-is; otherwise try normal DataFrame
+    df.to_csv(path, index=False)
+
+
+def load_from_csv(path: Optional[str] = None) -> pd.DataFrame:
+    if path is None:
+        path = os.path.join(DATA_PATH, "prices.csv")
+    if not os.path.exists(path):
+        return pd.DataFrame()
+    try:
+        return pd.read_csv(path, parse_dates=["Date"]) 
+    except Exception:
+        return pd.read_csv(path)
+
+
+def export_ticker_timeseries(df: pd.DataFrame) -> None:
+    """Export per-ticker CSVs into the ticker folder when possible.
+    Works with panels where second-level columns are tickers.
+    """
+    ensure_ticker_folder()
+    if df is None or df.empty:
+        return
+    # If MultiIndex columns with tickers at level 1
+    cols = df.columns
+    if isinstance(cols, pd.MultiIndex) and cols.nlevels >= 2:
+        tickers = cols.get_level_values(1).unique()
+        for t in tickers:
+            try:
+                sub = df.xs(t, level=1, axis=1)
+                path = os.path.join(TICKER_FOLDER, f"{t}.csv")
+                sub.reset_index().to_csv(path, index=False)
+            except Exception:
+                continue
+    else:
+        # Nothing to export
+        return
 

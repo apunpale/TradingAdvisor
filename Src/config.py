@@ -34,3 +34,11 @@ def load_restricted_list(path: str = RESTRICTED_FILE) -> set[str]:
         return set()
     with open(path) as f:
         return {line.strip().upper() for line in f if line.strip()}
+
+
+# Backwards-compatible constant used by older tests/scripts
+# If the tickers file changes at runtime, callers can call `load_tickers()`.
+try:
+    TICKERS = load_tickers()
+except Exception:
+    TICKERS = []

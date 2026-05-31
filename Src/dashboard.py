@@ -17,6 +17,7 @@ from Src.data_loader import (
 )
 from Src.backtest import (
     run_backtest,
+    export_signals,
     equity_curve,
     drawdown_series,
     total_return,
@@ -72,10 +73,17 @@ def refresh_all_benchmarks():
 def benchmark_return(panel, start_date, end_date, ticker):
     """
     Compute benchmark return using the Close price series.
+    Returns None if ticker is None, not in panel, or data is unavailable.
     """
+    if ticker is None:
+        return None
+
     try:
         series = panel["Close"][ticker]
-    except KeyError:
+    except (KeyError, TypeError):
+        return None
+
+    if series is None or series.empty:
         return None
 
     # Restrict to date range
@@ -86,6 +94,9 @@ def benchmark_return(panel, start_date, end_date, ticker):
 
     start_price = series.iloc[0]
     end_price = series.iloc[-1]
+
+    if start_price <= 0 or end_price <= 0:
+        return None
 
     return (end_price - start_price) / start_price
 
@@ -191,6 +202,7 @@ def main():
     )
 
     initial_cash = st.number_input("Initial investment (£)", value=5000, step=500)
+    monthly_contribution = st.number_input("Monthly contribution (£)", value=0, step=50)
     start_date = st.date_input("Start date", value=datetime(2018, 1, 2))
     end_date = st.date_input("End date", value=datetime.today())
 
@@ -202,13 +214,14 @@ def main():
             initial_cash,
             start_date,
             end_date,
+            monthly_contribution,
         )
 
 
 # -----------------------------
 # Backtest + Display
 # -----------------------------
-def run_and_display(panel, tickers, benchmark_ticker, initial_cash, start_date, end_date):
+def run_and_display(panel, tickers, benchmark_ticker, initial_cash, start_date, end_date, monthly_contribution=0.0):
     st.subheader("📊 Backtest Results")
 
     portfolio = run_backtest(
@@ -217,7 +230,10 @@ def run_and_display(panel, tickers, benchmark_ticker, initial_cash, start_date, 
         initial_cash=initial_cash,
         start_date=pd.to_datetime(start_date),
         end_date=pd.to_datetime(end_date),
+        monthly_contribution=monthly_contribution,
     )
+
+    export_signals(portfolio)
 
     eq = equity_curve(portfolio)
     dd = drawdown_series(eq)
@@ -248,30 +264,42 @@ def run_and_display(panel, tickers, benchmark_ticker, initial_cash, start_date, 
     else:
         col6.metric("Benchmark return", "N/A")
 
+    # Show total contributions if any
+    total_contrib = sum(c[1] for c in portfolio.contributions)
+    if total_contrib > 0:
+        st.metric("Total contributions", f"£{total_contrib:,.0f}")
+
     # -----------------------------
     # Relative performance chart
     # -----------------------------
-    st.subheader("📈 Relative Performance (Normalised)")
+    # Only display benchmark comparison if benchmark is available
+    if benchmark_ticker is not None and bench is not None:
+        try:
+            st.subheader("📈 Relative Performance (Normalised)")
 
-    bench_series = panel["Close"][benchmark_ticker].loc[eq.index]
-    bench_norm = bench_series / bench_series.iloc[0]
-    eq_norm = eq / eq.iloc[0]
+            bench_series = panel["Close"][benchmark_ticker].loc[eq.index]
+            bench_norm = bench_series / bench_series.iloc[0]
+            eq_norm = eq / eq.iloc[0]
 
-    rel_df = pd.DataFrame({"Strategy": eq_norm, benchmark_ticker: bench_norm})
-    st.line_chart(rel_df)
+            rel_df = pd.DataFrame({"Strategy": eq_norm, benchmark_ticker: bench_norm})
+            st.line_chart(rel_df)
 
-    # -----------------------------
-    # Rolling alpha/beta
-    # -----------------------------
-    st.subheader("📉 Rolling Alpha & Beta (60‑day)")
+            # -----------------------------
+            # Rolling alpha/beta
+            # -----------------------------
+            st.subheader("📉 Rolling Alpha & Beta (60‑day)")
 
-    alpha, beta = rolling_alpha_beta(eq, bench_series)
+            alpha, beta = rolling_alpha_beta(eq, bench_series)
 
-    st.write("**Rolling Alpha**")
-    st.line_chart(alpha)
+            st.write("**Rolling Alpha**")
+            st.line_chart(alpha)
 
-    st.write("**Rolling Beta**")
-    st.line_chart(beta)
+            st.write("**Rolling Beta**")
+            st.line_chart(beta)
+        except Exception as e:
+            st.warning(f"Could not display benchmark comparison: {str(e)}")
+    else:
+        st.info("No benchmark selected or benchmark data unavailable. Benchmark comparison disabled.")
 
     # -----------------------------
     # Per‑ticker vs benchmark table
@@ -326,10 +354,15 @@ def run_and_display(panel, tickers, benchmark_ticker, initial_cash, start_date, 
         with st.expander("Show daily momentum scores"):
             rows = []
             for h in portfolio.history:
+                signal = h.signals.get(ticker, {})
+                momentum = signal.get("momentum_strength", 0.0) if isinstance(signal, dict) else signal
                 rows.append({
                     "Date": h.date,
                     "Portfolio value": h.portfolio_value,
-                    "Momentum score": h.signals.get(ticker, 0.0),
+                    "Holding qty": h.holdings.get(ticker, 0.0),
+                    "Momentum score": momentum,
+                    "Buy": signal.get("buy") if isinstance(signal, dict) else None,
+                    "Sell": signal.get("sell") if isinstance(signal, dict) else None,
                 })
             df_signals = pd.DataFrame(rows).set_index("Date")
             st.dataframe(df_signals)

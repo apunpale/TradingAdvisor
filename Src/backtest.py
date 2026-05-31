@@ -34,21 +34,61 @@ def benchmark_return(panel, start_date, end_date, ticker):
 
 def run_backtest(
     panel: pd.DataFrame,
-    tickers: list[str],
-    initial_cash: float,
-    start_date: datetime,
-    end_date: datetime,
+    tickers: list[str] | None = None,
+    initial_cash: float | None = None,
+    start_date: datetime | None = None,
+    end_date: datetime | None = None,
+    monthly_contribution: float = 0.0,
     max_capital: float = 5_000.0,
     min_holding_days: int = 30,
 ) -> Portfolio:
+    """Run MA20 backtest.
+
+    Backwards compatible: older callers may pass only `panel` — in that
+    case we infer tickers, cash and date range from available data.
+    """
     restricted = load_restricted_list()
+
+    # Backwards-compatible behaviour: allow older callers to pass only `panel`.
+    if tickers is None:
+        try:
+            tickers = list(panel.columns.get_level_values(1).unique())
+        except Exception:
+            from Src.config import load_tickers
+
+            tickers = load_tickers()
+
+    if initial_cash is None:
+        initial_cash = 5_000.0
+
+    # limit dates to panel bounds when not provided
+    if start_date is None:
+        try:
+            start_date = panel.index.min()
+        except Exception:
+            start_date = datetime(2018, 1, 2)
+    if end_date is None:
+        try:
+            end_date = panel.index.max()
+        except Exception:
+            end_date = datetime.today()
+
     tradable = [t for t in tickers if t not in restricted]
 
     portfolio = Portfolio(initial_cash=initial_cash)
 
-    dates = panel.index[(panel.index >= start_date) & (panel.index <= end_date)]
+    dates = panel.index[(panel.index >= pd.to_datetime(start_date)) & (panel.index <= pd.to_datetime(end_date))]
 
+    prev_month = None
     for date in dates:
+        # monthly contribution: add at the first trading day of a new month
+        if prev_month is None:
+            prev_month = date.month
+        elif date.month != prev_month:
+            if monthly_contribution and monthly_contribution > 0:
+                portfolio.contribute(monthly_contribution, date)
+            prev_month = date.month
+
         # compute signals for this day
         day_signals = compute_ma20_signals_for_day(panel, date, tradable)
 
@@ -97,11 +137,8 @@ def run_backtest(
             portfolio.buy(ticker, sig["price"], amount, date)
 
         # log day
-        # for signals, we store momentum_strength per ticker
-        signal_scores = {
-            t: s["momentum_strength"] for t, s in day_signals.items()
-        }
-        portfolio.log_day(date, prices_today, signal_scores)
+        # store full signal metadata for each ticker so exports and analysis work correctly
+        portfolio.log_day(date, prices_today, day_signals)
 
     return portfolio
 
@@ -111,6 +148,7 @@ def run_backtest_with_benchmark(
     initial_cash,
     start_date,
     end_date,
+    monthly_contribution: float = 0.0,
     max_capital=5_000.0,
     min_holding_days=30,
 ):
@@ -120,6 +158,7 @@ def run_backtest_with_benchmark(
         initial_cash,
         start_date,
         end_date,
+        monthly_contribution,
         max_capital,
         min_holding_days,
     )
@@ -251,3 +290,56 @@ def win_rate(portfolio: Portfolio) -> float:
     # here pnl is just value; in a more detailed engine we'd track trade-level PnL
     # for now, treat all sells as "wins" if they exist
     return 1.0
+
+
+def export_signals(portfolio: Portfolio, path: str | None = None) -> None:
+    """Export per-day signal snapshots to CSV for compatibility with old scripts."""
+    import os
+
+    if path is None:
+        path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "Data", "signals.csv")
+
+    if not portfolio.history:
+        # write empty file
+        pd.DataFrame().to_csv(path, index=False)
+        return
+
+    rows = []
+    for s in portfolio.history:
+        row = {
+            "date": s.date,
+            "cash": s.cash,
+            "portfolio_value": s.portfolio_value,
+        }
+        for ticker, sig in s.signals.items():
+            if isinstance(sig, dict):
+                row.update({
+                    f"{ticker}_price": sig.get("price"),
+                    f"{ticker}_ma20_today": sig.get("ma20_today"),
+                    f"{ticker}_ma20_yesterday": sig.get("ma20_yesterday"),
+                    f"{ticker}_buy": sig.get("buy"),
+                    f"{ticker}_sell": sig.get("sell"),
+                    f"{ticker}_momentum_strength": sig.get("momentum_strength"),
+                    f"{ticker}_holding_qty": s.holdings.get(ticker, 0.0),
+                })
+            else:
+                row[f"{ticker}_momentum_strength"] = sig
+                row[f"{ticker}_holding_qty"] = s.holdings.get(ticker, 0.0)
+        rows.append(row)
+
+    pd.DataFrame(rows).to_csv(path, index=False)
+
+
+def export_trades(portfolio: Portfolio, path: str | None = None) -> None:
+    """Export trade list to CSV for compatibility with old scripts."""
+    import os
+
+    if path is None:
+        path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "Data", "trades.csv")
+
+    if not portfolio.trades:
+        pd.DataFrame().to_csv(path, index=False)
+        return
+
+    df = pd.DataFrame([t.__dict__ for t in portfolio.trades])
+    df.to_csv(path, index=False)

@@ -44,12 +44,20 @@ def plot_price_with_signals(df, portfolio, ticker):
 
     for day in portfolio.history:
         sig = day["signals"].get(ticker)
-        if sig == "BUY":
-            buy_dates.append(day["date"])
-            buy_prices.append(close.loc[day["date"]])
-        elif sig == "SELL":
-            sell_dates.append(day["date"])
-            sell_prices.append(close.loc[day["date"]])
+        if isinstance(sig, dict):
+            if sig.get("buy"):
+                buy_dates.append(day["date"])
+                buy_prices.append(close.loc[day["date"]])
+            if sig.get("sell"):
+                sell_dates.append(day["date"])
+                sell_prices.append(close.loc[day["date"]])
+        else:
+            if sig == "BUY":
+                buy_dates.append(day["date"])
+                buy_prices.append(close.loc[day["date"]])
+            elif sig == "SELL":
+                sell_dates.append(day["date"])
+                sell_prices.append(close.loc[day["date"]])
 
     plt.figure(figsize=(14, 6))
     plt.plot(close.index, close.values, label=f"{ticker} Close", color="blue")
