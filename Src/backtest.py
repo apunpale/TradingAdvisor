@@ -9,6 +9,7 @@ from Src.config import load_restricted_list
 from Src.portfolio import Portfolio
 from Src.signals import compute_ma20_signals_for_day
 
+
 def benchmark_return(panel, start_date, end_date, ticker):
     """
     Compute benchmark return using the Close price series.
@@ -30,8 +31,6 @@ def benchmark_return(panel, start_date, end_date, ticker):
     return (end_price - start_price) / start_price
 
 
-
-
 def run_backtest(
     panel: pd.DataFrame,
     tickers: list[str] | None = None,
@@ -41,8 +40,12 @@ def run_backtest(
     monthly_contribution: float = 0.0,
     max_capital: float = 5_000.0,
     min_holding_days: int = 30,
+    # new knobs for more pragmatic behaviour
+    momentum_scale: float = 0.10,          # how strong momentum must be to reach full per‑ticker allocation
+    loss_cut_threshold: float = -0.08,     # strong negative momentum → treat as “loss‑cut” condition
+    trend_reversal_threshold: float = -0.02,  # mild negative momentum + sell signal → “trend reversal” exit
 ) -> Portfolio:
-    """Run MA20 backtest.
+    """Run MA20 backtest with momentum‑scaled position sizing and more nuanced sell logic.
 
     Backwards compatible: older callers may pass only `panel` — in that
     case we infer tickers, cash and date range from available data.
@@ -77,7 +80,13 @@ def run_backtest(
 
     portfolio = Portfolio(initial_cash=initial_cash)
 
-    dates = panel.index[(panel.index >= pd.to_datetime(start_date)) & (panel.index <= pd.to_datetime(end_date))]
+    dates = panel.index[
+        (panel.index >= pd.to_datetime(start_date))
+        & (panel.index <= pd.to_datetime(end_date))
+    ]
+
+    # per‑ticker capital cap (used for scaling in)
+    per_ticker_cap = max_capital / max(len(tradable), 1)
 
     seen_months = set()
     for date in dates:
@@ -92,36 +101,54 @@ def run_backtest(
         day_signals = compute_ma20_signals_for_day(panel, date, tradable)
 
         # prices for valuation
-        prices_today = {
-            t: s["price"] for t, s in day_signals.items()
-        }
+        prices_today = {t: s["price"] for t, s in day_signals.items()}
 
-        # SELL first (respect 30-day holding)
+        # -------------------------
+        # SELL logic (full exits)
+        # -------------------------
+        # We still sell full positions (Portfolio API is full‑sell),
+        # but we distinguish between:
+        #   - strong negative momentum (loss‑cut)
+        #   - mild negative momentum + MA20 sell signal (trend reversal)
         for ticker in list(portfolio.holdings.keys()):
             if ticker not in day_signals:
                 continue
             sig = day_signals[ticker]
-            if sig["sell"] and portfolio.can_sell(ticker, date, min_holding_days):
-                portfolio.sell(ticker, sig["price"], date)
+            ms = sig.get("momentum_strength", 0.0)
 
-        # BUY next (no limit on number of buys)
-        # candidates: tickers with buy signal and not currently held
+            if not portfolio.can_sell(ticker, date, min_holding_days):
+                continue
+
+            # Loss‑cut: momentum very negative
+            if ms <= loss_cut_threshold:
+                portfolio.sell(ticker, sig["price"], date)
+                continue
+
+            # Trend reversal: MA20 sell signal + mildly negative momentum
+            if sig.get("sell") and ms <= trend_reversal_threshold:
+                portfolio.sell(ticker, sig["price"], date)
+                continue
+
+        # -------------------------
+        # BUY logic (scaled by momentum)
+        # -------------------------
+        # Candidates: tickers with buy signal (we allow re‑entry after sells)
         buy_candidates = []
         for t, sig in day_signals.items():
-            if not sig["buy"]:
-                continue
-            if t in portfolio.holdings:
+            if not sig.get("buy"):
                 continue
             buy_candidates.append((t, sig))
 
         # sort by strongest momentum first
         buy_candidates.sort(
-            key=lambda x: x[1]["momentum_strength"], reverse=True
+            key=lambda x: x[1].get("momentum_strength", 0.0), reverse=True
         )
 
         for ticker, sig in buy_candidates:
-            prices_today[ticker] = sig["price"]
-            # current exposure
+            price = sig["price"]
+            prices_today[ticker] = price
+
+            # current exposure across all tickers
             exposure = portfolio.total_exposure(prices_today)
             remaining_capacity = max_capital - exposure
             if remaining_capacity <= 0:
@@ -129,17 +156,35 @@ def run_backtest(
             if portfolio.cash <= 0:
                 break
 
-            amount = min(remaining_capacity, portfolio.cash)
+            # scale target allocation by momentum strength
+            ms = max(sig.get("momentum_strength", 0.0), 0.0)
+            if momentum_scale <= 0:
+                scale = 1.0
+            else:
+                scale = min(ms / momentum_scale, 1.0)
+
+            target_value = per_ticker_cap * scale
+
+            # if we already hold some, compute current value
+            pos = portfolio.holdings.get(ticker)
+            current_shares = pos.shares if pos else 0.0
+            current_value = current_shares * price
+
+            buy_amount = target_value - current_value
+            if buy_amount <= 0:
+                continue
+
+            amount = min(buy_amount, remaining_capacity, portfolio.cash)
             if amount <= 0:
                 continue
 
-            portfolio.buy(ticker, sig["price"], amount, date)
+            portfolio.buy(ticker, price, amount, date)
 
         # log day
-        # store full signal metadata for each ticker so exports and analysis work correctly
         portfolio.log_day(date, prices_today, day_signals)
 
     return portfolio
+
 
 def run_backtest_with_benchmark(
     panel,
@@ -180,6 +225,7 @@ def run_backtest_with_benchmark(
         "beat_benchmark": beat_benchmark,
     }
 
+
 def compute_benchmark_return(panel: pd.DataFrame, start_date, end_date) -> float | None:
     """
     Computes S&P 500 (^GSPC) return over the backtest window.
@@ -200,6 +246,7 @@ def compute_benchmark_return(panel: pd.DataFrame, start_date, end_date) -> float
     end_price = spx_period.iloc[-1]["Close"]
 
     return (end_price - start_price) / start_price
+
 
 def equity_curve(portfolio: Portfolio) -> pd.Series:
     dates = [h.date for h in portfolio.history]
@@ -300,7 +347,9 @@ def export_signals(portfolio: Portfolio, path: str | None = None) -> None:
     import os
 
     if path is None:
-        path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "Data", "signals.csv")
+        path = os.path.join(
+            os.path.dirname(os.path.dirname(__file__)), "Data", "signals.csv"
+        )
 
     if not portfolio.history:
         # write empty file
@@ -316,15 +365,19 @@ def export_signals(portfolio: Portfolio, path: str | None = None) -> None:
         }
         for ticker, sig in s.signals.items():
             if isinstance(sig, dict):
-                row.update({
-                    f"{ticker}_price": sig.get("price"),
-                    f"{ticker}_ma20_today": sig.get("ma20_today"),
-                    f"{ticker}_ma20_yesterday": sig.get("ma20_yesterday"),
-                    f"{ticker}_buy": sig.get("buy"),
-                    f"{ticker}_sell": sig.get("sell"),
-                    f"{ticker}_momentum_strength": sig.get("momentum_strength"),
-                    f"{ticker}_holding_qty": s.holdings.get(ticker, 0.0),
-                })
+                row.update(
+                    {
+                        f"{ticker}_price": sig.get("price"),
+                        f"{ticker}_ma20_today": sig.get("ma20_today"),
+                        f"{ticker}_ma20_yesterday": sig.get("ma20_yesterday"),
+                        f"{ticker}_buy": sig.get("buy"),
+                        f"{ticker}_sell": sig.get("sell"),
+                        f"{ticker}_momentum_strength": sig.get(
+                            "momentum_strength"
+                        ),
+                        f"{ticker}_holding_qty": s.holdings.get(ticker, 0.0),
+                    }
+                )
             else:
                 row[f"{ticker}_momentum_strength"] = sig
                 row[f"{ticker}_holding_qty"] = s.holdings.get(ticker, 0.0)
@@ -338,7 +391,9 @@ def export_trades(portfolio: Portfolio, path: str | None = None) -> None:
     import os
 
     if path is None:
-        path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "Data", "trades.csv")
+        path = os.path.join(
+            os.path.dirname(os.path.dirname(__file__)), "Data", "trades.csv"
+        )
 
     if not portfolio.trades:
         pd.DataFrame().to_csv(path, index=False)

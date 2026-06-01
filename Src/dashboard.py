@@ -201,10 +201,58 @@ def main():
         index=0 if all_benchmarks else None,
     )
 
+    min_holding_days = st.number_input(
+        "Minimum holding period (days)",
+        min_value=0,
+        value=30,
+        step=1
+    )
+
     initial_cash = st.number_input("Initial investment (£)", value=5000, step=500)
     monthly_contribution = st.number_input("Monthly contribution (£)", value=0, step=50)
     start_date = st.date_input("Start date", value=datetime(2018, 1, 2))
     end_date = st.date_input("End date", value=datetime.today())
+
+    with st.expander("Advanced Strategy Controls"):
+        st.markdown("### Position Sizing (Momentum Scaling)")
+
+        momentum_scale = st.number_input(
+            "Momentum scale (higher = slower scaling)",
+            min_value=0.01,
+            max_value=1.0,
+            value=0.10,
+            step=0.01,
+            help=(
+                "Determines how quickly position size increases with momentum. "
+                "Example: if momentum is 0.05 and scale is 0.10 → 50% position."
+            )
+        )
+
+        st.markdown("### Sell Conditions")
+
+        loss_cut_threshold = st.number_input(
+            "Loss-cut threshold (momentum ≤ this triggers full exit)",
+            min_value=-1.0,
+            max_value=0.0,
+            value=-0.08,
+            step=0.01,
+            help=(
+                "Strong negative momentum triggers a loss-cut. "
+                "Example: -0.08 means sell if momentum_strength ≤ -8%."
+            )
+        )
+
+        trend_reversal_threshold = st.number_input(
+            "Trend reversal threshold (momentum ≤ this + MA20 sell triggers exit)",
+            min_value=-1.0,
+            max_value=0.0,
+            value=-0.02,
+            step=0.01,
+            help=(
+                "Mild negative momentum combined with a MA20 sell signal triggers exit. "
+                "Example: -0.02 means exit if momentum_strength ≤ -2% AND MA20 says sell."
+            )
+        )
 
     if st.button("Run backtest"):
         run_and_display(
@@ -215,13 +263,17 @@ def main():
             start_date,
             end_date,
             monthly_contribution,
+            min_holding_days,
+            momentum_scale,
+            loss_cut_threshold,
+            trend_reversal_threshold
         )
 
 
 # -----------------------------
 # Backtest + Display
 # -----------------------------
-def run_and_display(panel, tickers, benchmark_ticker, initial_cash, start_date, end_date, monthly_contribution=0.0):
+def run_and_display(panel, tickers, benchmark_ticker, initial_cash, start_date, end_date, monthly_contribution=0.0, min_holding_days=0, momentum_scale=0.10, loss_cut_threshold: float = -0.08, trend_reversal_threshold: float = -0.02):
     st.subheader("📊 Backtest Results")
 
     portfolio = run_backtest(
@@ -231,6 +283,10 @@ def run_and_display(panel, tickers, benchmark_ticker, initial_cash, start_date, 
         start_date=pd.to_datetime(start_date),
         end_date=pd.to_datetime(end_date),
         monthly_contribution=monthly_contribution,
+        min_holding_days=min_holding_days,
+        momentum_scale=momentum_scale,
+        loss_cut_threshold=loss_cut_threshold,
+        trend_reversal_threshold=trend_reversal_threshold
     )
 
     export_signals(portfolio)
