@@ -79,15 +79,14 @@ def run_backtest(
 
     dates = panel.index[(panel.index >= pd.to_datetime(start_date)) & (panel.index <= pd.to_datetime(end_date))]
 
-    prev_month = None
+    seen_months = set()
     for date in dates:
-        # monthly contribution: add at the first trading day of a new month
-        if prev_month is None:
-            prev_month = date.month
-        elif date.month != prev_month:
+        # monthly contribution: add on the first trading day of each calendar month
+        month_key = (int(date.year), int(date.month))
+        if month_key not in seen_months:
             if monthly_contribution and monthly_contribution > 0:
                 portfolio.contribute(monthly_contribution, date)
-            prev_month = date.month
+            seen_months.add(month_key)
 
         # compute signals for this day
         day_signals = compute_ma20_signals_for_day(panel, date, tradable)
@@ -220,11 +219,13 @@ def drawdown_series(equity: pd.Series) -> pd.Series:
 def total_return(portfolio: Portfolio) -> float:
     if not portfolio.history:
         return 0.0
-    start = portfolio.history[0].portfolio_value
-    end = portfolio.history[-1].portfolio_value
-    if start <= 0:
+    # Compute total invested capital (initial cash + all external contributions)
+    total_contrib = sum(a for (_d, a) in getattr(portfolio, "contributions", []))
+    invested = float(getattr(portfolio, "initial_cash", 0.0)) + float(total_contrib)
+    end = float(portfolio.history[-1].portfolio_value)
+    if invested <= 0:
         return 0.0
-    return (end - start) / start
+    return (end - invested) / invested
 
 
 def cagr(portfolio: Portfolio) -> float:
@@ -236,11 +237,13 @@ def cagr(portfolio: Portfolio) -> float:
     if days <= 0:
         return 0.0
     years = days / 365.25
-    start = portfolio.history[0].portfolio_value
-    end = portfolio.history[-1].portfolio_value
-    if start <= 0 or end <= 0:
+    # Use total invested capital (initial cash + contributions) as the starting base
+    total_contrib = sum(a for (_d, a) in getattr(portfolio, "contributions", []))
+    invested = float(getattr(portfolio, "initial_cash", 0.0)) + float(total_contrib)
+    end = float(portfolio.history[-1].portfolio_value)
+    if invested <= 0 or end <= 0:
         return 0.0
-    return (end / start) ** (1 / years) - 1
+    return (end / invested) ** (1 / years) - 1
 
 
 def max_drawdown(equity: pd.Series) -> float:

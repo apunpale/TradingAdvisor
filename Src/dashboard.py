@@ -264,10 +264,10 @@ def run_and_display(panel, tickers, benchmark_ticker, initial_cash, start_date, 
     else:
         col6.metric("Benchmark return", "N/A")
 
-    # Show total contributions if any
+    # Show total contributions (initial + recurring)
     total_contrib = sum(c[1] for c in portfolio.contributions)
-    if total_contrib > 0:
-        st.metric("Total contributions", f"£{total_contrib:,.0f}")
+    total_invested = getattr(portfolio, "initial_cash", 0.0) + total_contrib
+    st.metric("Total invested", f"£{total_invested:,.0f}")
 
     # -----------------------------
     # Relative performance chart
@@ -352,20 +352,50 @@ def run_and_display(panel, tickers, benchmark_ticker, initial_cash, start_date, 
         st.line_chart(close)
 
         with st.expander("Show daily momentum scores"):
+            # Build a wide table: Date, portfolio value, cash, and per-ticker qty + buy/sell prices
             rows = []
             for h in portfolio.history:
-                signal = h.signals.get(ticker, {})
-                momentum = signal.get("momentum_strength", 0.0) if isinstance(signal, dict) else signal
-                rows.append({
+                row = {
                     "Date": h.date,
                     "Portfolio value": h.portfolio_value,
-                    "Holding qty": h.holdings.get(ticker, 0.0),
-                    "Momentum score": momentum,
-                    "Buy": signal.get("buy") if isinstance(signal, dict) else None,
-                    "Sell": signal.get("sell") if isinstance(signal, dict) else None,
-                })
+                    "Cash": h.cash,
+                }
+
+                # For each ticker in the backtest selection, add qty and buy/sell price columns
+                for t in tickers:
+                    qty = h.holdings.get(t, 0.0)
+                    sig = h.signals.get(t, {}) if isinstance(h.signals, dict) else {}
+
+                    # closing market price for the snapshot day (if available in signals)
+                    close_price = sig.get("price") if isinstance(sig, dict) else None
+
+                    # Determine trades for this ticker on the snapshot date and compute totals
+                    buys = [tr.value for tr in getattr(portfolio, "trades", []) if tr.ticker == t and tr.date.date() == h.date.date() and tr.side == "BUY"]
+                    sells = [tr.value for tr in getattr(portfolio, "trades", []) if tr.ticker == t and tr.date.date() == h.date.date() and tr.side == "SELL"]
+
+                    action = ""
+                    transaction_price = None
+                    if buys:
+                        action = "BUY"
+                        transaction_price = sum(buys)
+                    elif sells:
+                        action = "SELL"
+                        transaction_price = sum(sells)
+
+                    row[f"{t} close_price"] = close_price
+                    row[f"{t} qty"] = qty
+                    row[f"{t} action"] = action
+                    row[f"{t} transaction_price"] = transaction_price
+
+                # Also include an overall momentum score column as the sum/avg of available momentum scores
+                momentum_vals = [v.get("momentum_strength") for v in h.signals.values() if isinstance(v, dict)] if isinstance(h.signals, dict) else []
+                row["Momentum avg"] = float(sum(momentum_vals) / len(momentum_vals)) if momentum_vals else 0.0
+
+                rows.append(row)
+
             df_signals = pd.DataFrame(rows).set_index("Date")
-            st.dataframe(df_signals)
+            # Format numeric columns for readability
+            st.dataframe(df_signals.fillna("-").sort_index())
 
 
 if __name__ == "__main__":
