@@ -210,6 +210,7 @@ def main():
 
     initial_cash = st.number_input("Initial investment (£)", value=5000, step=500)
     monthly_contribution = st.number_input("Monthly contribution (£)", value=0, step=50)
+    broker_fee = st.number_input("Broker charge per transaction (£)", value=0.0, min_value=0.0, step=1.0)
     start_date = st.date_input("Start date", value=datetime(2018, 1, 2))
     end_date = st.date_input("End date", value=datetime.today())
 
@@ -263,6 +264,7 @@ def main():
             start_date,
             end_date,
             monthly_contribution,
+            broker_fee,
             min_holding_days,
             momentum_scale,
             loss_cut_threshold,
@@ -273,7 +275,7 @@ def main():
 # -----------------------------
 # Backtest + Display
 # -----------------------------
-def run_and_display(panel, tickers, benchmark_ticker, initial_cash, start_date, end_date, monthly_contribution=0.0, min_holding_days=0, momentum_scale=0.10, loss_cut_threshold: float = -0.08, trend_reversal_threshold: float = -0.02):
+def run_and_display(panel, tickers, benchmark_ticker, initial_cash, start_date, end_date, monthly_contribution=0.0, broker_fee: float = 0.0, min_holding_days=0, momentum_scale=0.10, loss_cut_threshold: float = -0.08, trend_reversal_threshold: float = -0.02):
     st.subheader("📊 Backtest Results")
 
     portfolio = run_backtest(
@@ -283,6 +285,7 @@ def run_and_display(panel, tickers, benchmark_ticker, initial_cash, start_date, 
         start_date=pd.to_datetime(start_date),
         end_date=pd.to_datetime(end_date),
         monthly_contribution=monthly_contribution,
+        broker_fee_per_transaction=broker_fee,
         min_holding_days=min_holding_days,
         momentum_scale=momentum_scale,
         loss_cut_threshold=loss_cut_threshold,
@@ -324,6 +327,9 @@ def run_and_display(panel, tickers, benchmark_ticker, initial_cash, start_date, 
     total_contrib = sum(c[1] for c in portfolio.contributions)
     total_invested = getattr(portfolio, "initial_cash", 0.0) + total_contrib
     st.metric("Total invested", f"£{total_invested:,.0f}")
+
+    total_fees = sum(getattr(t, "fee", 0.0) for t in portfolio.trades)
+    st.metric("Broker fees paid", f"£{total_fees:,.2f}")
 
     # -----------------------------
     # Relative performance chart
@@ -431,6 +437,7 @@ def run_and_display(panel, tickers, benchmark_ticker, initial_cash, start_date, 
 
                     action = ""
                     transaction_price = None
+                    transaction_fee = 0.0
                     if buys:
                         action = "BUY"
                         transaction_price = sum(buys)
@@ -438,10 +445,23 @@ def run_and_display(panel, tickers, benchmark_ticker, initial_cash, start_date, 
                         action = "SELL"
                         transaction_price = sum(sells)
 
+                    transaction_fee = sum(
+                        tr.fee
+                        for tr in getattr(portfolio, "trades", [])
+                        if tr.ticker == t and tr.date.date() == h.date.date()
+                    )
+
                     row[f"{t} close_price"] = close_price
                     row[f"{t} qty"] = qty
                     row[f"{t} action"] = action
                     row[f"{t} transaction_price"] = transaction_price
+                    row[f"{t} fee"] = transaction_fee
+
+                row["Daily fees"] = sum(
+                    tr.fee
+                    for tr in getattr(portfolio, "trades", [])
+                    if tr.date.date() == h.date.date()
+                )
 
                 # Also include an overall momentum score column as the sum/avg of available momentum scores
                 momentum_vals = [v.get("momentum_strength") for v in h.signals.values() if isinstance(v, dict)] if isinstance(h.signals, dict) else []

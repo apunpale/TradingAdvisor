@@ -19,6 +19,7 @@ class Trade:
     price: float
     value: float
     shares: float
+    fee: float = 0.0
 
 
 @dataclass
@@ -63,11 +64,13 @@ class Portfolio:
         holding_days = (date - pos.entry_date).days
         return holding_days >= min_holding_days
 
-    def buy(self, ticker: str, price: float, amount: float, date: datetime) -> None:
-        if price <= 0 or amount <= 0 or amount > self.cash:
+    def buy(self, ticker: str, price: float, amount: float, date: datetime, fee: float = 0.0) -> None:
+        total_cost = amount + fee
+        if price <= 0 or amount <= 0 or total_cost > self.cash:
             return
+
         shares = amount / price
-        self.cash -= amount
+        self.cash -= total_cost
 
         if ticker in self.holdings:
             # keep earliest entry date
@@ -84,10 +87,11 @@ class Portfolio:
                 price=price,
                 value=amount,
                 shares=shares,
+                fee=fee,
             )
         )
 
-    def sell(self, ticker: str, price: float, date: datetime) -> None:
+    def sell(self, ticker: str, price: float, date: datetime, fee: float = 0.0) -> None:
         if price <= 0 or ticker not in self.holdings:
             return
         pos = self.holdings[ticker]
@@ -96,7 +100,7 @@ class Portfolio:
             return
 
         value = shares_to_sell * price
-        self.cash += value
+        self.cash += value - fee
         del self.holdings[ticker]
 
         self.trades.append(
@@ -107,6 +111,7 @@ class Portfolio:
                 price=price,
                 value=value,
                 shares=shares_to_sell,
+                fee=fee,
             )
         )
 

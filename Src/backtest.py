@@ -40,6 +40,7 @@ def run_backtest(
     monthly_contribution: float = 0.0,
     max_capital: float = 5_000.0,
     min_holding_days: int = 30,
+    broker_fee_per_transaction: float = 0.0,
     # new knobs for more pragmatic behaviour
     momentum_scale: float = 0.10,          # how strong momentum must be to reach full per‑ticker allocation
     loss_cut_threshold: float = -0.08,     # strong negative momentum → treat as “loss‑cut” condition
@@ -121,12 +122,12 @@ def run_backtest(
 
             # Loss‑cut: momentum very negative
             if ms <= loss_cut_threshold:
-                portfolio.sell(ticker, sig["price"], date)
+                portfolio.sell(ticker, sig["price"], date, fee=broker_fee_per_transaction)
                 continue
 
             # Trend reversal: MA20 sell signal + mildly negative momentum
             if sig.get("sell") and ms <= trend_reversal_threshold:
-                portfolio.sell(ticker, sig["price"], date)
+                portfolio.sell(ticker, sig["price"], date, fee=broker_fee_per_transaction)
                 continue
 
         # -------------------------
@@ -174,11 +175,15 @@ def run_backtest(
             if buy_amount <= 0:
                 continue
 
-            amount = min(buy_amount, remaining_capacity, portfolio.cash)
+            if portfolio.cash <= broker_fee_per_transaction:
+                continue
+
+            available_cash = portfolio.cash - broker_fee_per_transaction
+            amount = min(buy_amount, remaining_capacity, available_cash)
             if amount <= 0:
                 continue
 
-            portfolio.buy(ticker, price, amount, date)
+            portfolio.buy(ticker, price, amount, date, fee=broker_fee_per_transaction)
 
         # log day
         portfolio.log_day(date, prices_today, day_signals)
@@ -197,14 +202,15 @@ def run_backtest_with_benchmark(
     min_holding_days=30,
 ):
     portfolio = run_backtest(
-        panel,
-        tickers,
-        initial_cash,
-        start_date,
-        end_date,
-        monthly_contribution,
-        max_capital,
-        min_holding_days,
+        panel=panel,
+        tickers=tickers,
+        initial_cash=initial_cash,
+        start_date=start_date,
+        end_date=end_date,
+        monthly_contribution=monthly_contribution,
+        max_capital=max_capital,
+        min_holding_days=min_holding_days,
+        broker_fee_per_transaction=0.0,
     )
 
     # Strategy return
@@ -317,7 +323,7 @@ def best_trade(portfolio: Portfolio):
         return None
     df = pd.DataFrame([t.__dict__ for t in portfolio.trades])
     # approximate PnL per trade: SELL positive, BUY negative
-    df["pnl"] = df["shares"] * df["price"] * df["side"].map({"BUY": -1, "SELL": 1})
+    df["pnl"] = df["shares"] * df["price"] * df["side"].map({"BUY": -1, "SELL": 1}) - df["fee"]
     return df.loc[df["pnl"].idxmax()]
 
 
@@ -325,7 +331,7 @@ def worst_trade(portfolio: Portfolio):
     if not portfolio.trades:
         return None
     df = pd.DataFrame([t.__dict__ for t in portfolio.trades])
-    df["pnl"] = df["shares"] * df["price"] * df["side"].map({"BUY": -1, "SELL": 1})
+    df["pnl"] = df["shares"] * df["price"] * df["side"].map({"BUY": -1, "SELL": 1}) - df["fee"]
     return df.loc[df["pnl"].idxmin()]
 
 
